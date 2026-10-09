@@ -34,7 +34,7 @@ class Reframer(private val ctx: Context) {
     fun export(
         uri: Uri, outPath: String, path: CropPath, srcW: Int, srcH: Int, outH: Int = 1920, hevc: Boolean = false,
         onProgress: (Float) -> Unit, onDone: (Result<ExportResult>) -> Unit,
-    ) {
+    ): Transformer {
         val outW = (outH * 9 / 16) / 2 * 2
         val effects: List<Effect> = listOf(CropEffect(path, srcW, srcH), Presentation.createForWidthAndHeight(outW, outH, Presentation.LAYOUT_STRETCH_TO_FIT))
         val item = EditedMediaItem.Builder(MediaItem.fromUri(uri)).setEffects(Effects(emptyList(), effects)).build()
@@ -53,5 +53,6 @@ class Reframer(private val ctx: Context) {
                 if (transformer.getProgress(holder) != Transformer.PROGRESS_STATE_NO_TRANSFORMATION) h.postDelayed(this, 300)
             }
         })
+        return transformer
     }
 }

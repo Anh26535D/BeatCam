@@ -49,7 +49,7 @@ class FrameAnalyzer(private val ctx: Context, private val usePose: Boolean, priv
     }
 
     /** Returns one camera [Step] per sampled frame. [onProgress] gets 0..1. */
-    fun analyse(uri: Uri, info: VideoInfo, fps: Double, onProgress: (Float) -> Unit): List<Step> {
+    fun analyse(uri: Uri, info: VideoInfo, fps: Double, check: () -> Unit = {}, onProgress: (Float) -> Unit): List<Step> {
         val r = MediaMetadataRetriever().apply { setDataSource(ctx, uri) }
         val planner = Planner(fps, usePose, sports)
         val scale = minOf(1.0, 640.0 / maxOf(info.width, info.height))
@@ -57,6 +57,7 @@ class FrameAnalyzer(private val ctx: Context, private val usePose: Boolean, priv
         val n = (info.durationMs / 1000.0 * fps).toInt().coerceAtLeast(1)
         val steps = ArrayList<Step>(n)
         for (i in 0 until n) {
+            check()
             val bmp = r.getScaledFrameAtTime((i / fps * 1_000_000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST, aw, ah)
             steps += planner.step(if (bmp == null) emptyList() else detect(bmp, 1.0 / scale))
             bmp?.recycle()
