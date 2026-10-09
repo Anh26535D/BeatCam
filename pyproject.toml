@@ -1,0 +1,19 @@
+[project]
+name = "beatcam"
+version = "0.1.0"
+description = "AI virtual cameraman: smooth 9:16 tracking, beat-synced punch zoom, pose and ball-intent framing"
+requires-python = ">=3.10"
+dependencies = ["numpy", "opencv-python-headless"]
+
+[project.optional-dependencies]
+yolo = ["ultralytics"]
+dev = ["pytest"]
+
+[project.scripts]
+beatcam = "beatcam.cli:main"
+
+[tool.setuptools]
+packages = ["beatcam"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
