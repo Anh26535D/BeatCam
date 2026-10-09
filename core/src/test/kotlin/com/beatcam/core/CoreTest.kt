@@ -242,6 +242,37 @@ class CoreTest {
         }
     }
 
+    @Test fun mergedDetectionDoesNotMoveFocus() {
+        // two lookalike dancers overlap; the detector sometimes returns ONE box around both. Target = left dancer.
+        val left = { y: Double -> box(400.0, y, 480.0, y + 200) }
+        fun d(b: Box, id: Int) = Detection(b, 0.9, trackId = id, feature = hist(1)) // identical looks: appearance can't help
+        val frames = (0 until 40).map { i ->
+            if (i in 10..24) listOf(d(box(400.0, 300.0, 550.0, 500.0), 7))
+            else listOf(d(left(300.0), 1), d(box(470.0, 300.0, 550.0, 500.0), 2))
+        }
+        val steps = Planner(15.0, target = left(300.0), targetFrame = 0).plan(frames)
+        for (i in 0 until 40) assertEquals(440.0, steps[i].box!!.cx, 15.0, "step $i")
+    }
+
+    @Test fun fusionSplitsMergedBoxesIntoSkeletons() {
+        fun skel(x: Double) = Detection(box(x, 300.0, x + 70, 500.0), 0.9, keypoints = Array(17) { doubleArrayOf(x, 0.0, 1.0) })
+        val merged = Detection(box(400.0, 300.0, 550.0, 500.0), 0.9, trackId = 3)
+        val out = fusePeople(listOf(merged), listOf(skel(400.0), skel(480.0)))
+        assertEquals(2, out.size)
+        assertTrue(out.all { it.keypoints != null && it.box.w < 100 })
+        val single = fusePeople(listOf(merged), listOf(skel(450.0)))
+        assertEquals(1, single.size); assertEquals(merged.box, single[0].box); assertTrue(single[0].keypoints != null)
+        assertEquals(1, fusePeople(emptyList(), listOf(skel(100.0))).size)
+    }
+
+    @Test fun reselectsSamePersonAfterScrubbing() {
+        val prev = person(1, 400.0, colour = 1)
+        // 5 s later both dancers moved a bit; the previously chosen one is the one that still looks like colour 1
+        val now = listOf(person(8, 520.0, colour = 2), person(9, 450.0, colour = 1))
+        val m = TargetTracker(prev, lostSteps = 60, splitMerged = false).update(now)
+        assertEquals(9, m?.trackId)
+    }
+
     @Test fun frameShapeAspect() {
         assertEquals(9.0 / 16, FrameShape.PORTRAIT_9_16.aspect, 1e-9)
         assertEquals(1.0, FrameShape.SQUARE.aspect)

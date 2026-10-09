@@ -13,6 +13,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.transformer.Transformer
 import com.beatcam.core.Box
+import com.beatcam.core.Detection
+import com.beatcam.core.TargetTracker
 import com.beatcam.core.CameraConfig
 import com.beatcam.core.FrameShape
 import com.beatcam.core.CropPath
@@ -47,7 +49,7 @@ data class UiState(
     val recents: List<File> = emptyList(),
     val shape: FrameShape = FrameShape.PORTRAIT_9_16,
     val zoom: Float = 1.25f,
-    val people: List<Box> = emptyList(),
+    val people: List<Detection> = emptyList(),
     val selected: Int? = null,
     val previewMs: Long = 0,
     val detecting: Boolean = false,
@@ -94,7 +96,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         previewJob?.cancel()
         _state.update { it.copy(previewMs = ms, detecting = true) }
         previewJob = viewModelScope.launch {
-            val (bmp, boxes) = try {
+            val prev = _state.value.selected?.let { _state.value.people.getOrNull(it) }
+            val (bmp, found) = try {
                 withContext(Dispatchers.Default) {
                     val fa = previewer ?: FrameAnalyzer(getApplication(), false, false, gpu = false).also { previewer = it }
                     fa.peopleAt(src, info, ms)
@@ -105,9 +108,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             _state.update {
-                // default to the biggest person; the user taps to pick someone else
-                val big = boxes.indices.maxByOrNull { i -> boxes[i].w * boxes[i].h }
-                it.copy(thumb = bmp ?: it.thumb, people = boxes, selected = big, detecting = false)
+                // Keep the SAME person selected while scrubbing (match by position + appearance). Only the very first
+                // frame defaults to the biggest person; if the chosen person is not visible here, nobody is selected.
+                val sel = if (prev != null) {
+                    TargetTracker(prev, lostSteps = 30, splitMerged = false).update(found)?.let { m -> found.indexOf(m).takeIf { i -> i >= 0 } }
+                } else found.indices.maxByOrNull { i -> found[i].box.w * found[i].box.h }
+                it.copy(thumb = bmp ?: it.thumb, people = found, selected = sel, detecting = false)
             }
         }
     }
@@ -172,7 +178,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     _state.update { it.copy(stage = "Đang nhận diện chuyển động…", progress = 0.05f) }
                     FrameAnalyzer(ctx, s.pose, s.sports, gpu = true).use { fa ->
                         val info = fa.info(src)
-                        val target = s.selected?.let { s.people.getOrNull(it) }
+                        val target = s.selected?.let { s.people.getOrNull(it) }?.box
                         val steps = fa.analyse(src, info, fps, target, s.previewMs, check = { ensureActive() }) { p ->
                             _state.update { it.copy(progress = 0.05f + 0.55f * p) }
                         }

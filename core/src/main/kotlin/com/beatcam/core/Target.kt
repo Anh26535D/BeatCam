@@ -24,13 +24,17 @@ fun similarity(a: DoubleArray?, b: DoubleArray?): Double {
  * frame is compared with the gallery (no distance limit), and if the motion pick looks like someone else while another
  * candidate clearly matches the gallery, the tracker jumps back to the real person.
  */
-class TargetTracker(seed: Detection, private val reidMin: Double = 0.75, private val margin: Double = 0.04) {
+class TargetTracker(
+    seed: Detection, private val reidMin: Double = 0.75, private val margin: Double = 0.04,
+    lostSteps: Int = 0,                  // how long ago [seed] was seen (e.g. after the user scrubbed the timeline)
+    private val splitMerged: Boolean = true,
+) {
     private var box = seed.box
     private var vx = 0.0
     private var vy = 0.0
     private val gallery = ArrayList<DoubleArray>().also { g -> seed.feature?.let { g += it } }
     private var accepted = 0
-    var lost = 0; private set
+    var lost = lostSteps; private set
 
     private fun appearance(f: DoubleArray?): Double? =
         if (f == null || gallery.isEmpty()) null else gallery.maxOf { similarity(it, f) }
@@ -42,12 +46,13 @@ class TargetTracker(seed: Detection, private val reidMin: Double = 0.75, private
         val px = box.cx + vx * steps; val py = box.cy + vy * steps
         val predicted = Box(px - box.w / 2, py - box.h / 2, px + box.w / 2, py + box.h / 2)
         val gate = 0.8 + 0.4 * minOf(lost, 15) // in person-heights, grows while lost
-        val sims = people.map { appearance(it.feature) }
+        val cands = if (splitMerged) people.map { unmerge(it, px, py) } else people
+        val sims = cands.map { appearance(it.feature) }
 
         // 1) motion-gated candidate, scored by distance + size + overlap + appearance
         var moved: Int? = null
         var bestCost = Double.MAX_VALUE
-        for ((i, d) in people.withIndex()) {
+        for ((i, d) in cands.withIndex()) {
             val dist = hypot(d.cx - px, d.cy - py) / h
             if (dist > gate) continue
             val app = sims[i] ?: 0.5
@@ -58,7 +63,7 @@ class TargetTracker(seed: Detection, private val reidMin: Double = 0.75, private
         }
 
         // 2) appearance-only candidate anywhere in the frame (clear winner over the runner-up)
-        val ranked = people.indices.filter { sims[it] != null }.sortedByDescending { sims[it] }
+        val ranked = cands.indices.filter { sims[it] != null }.sortedByDescending { sims[it] }
         val top = ranked.firstOrNull()
         val second = ranked.getOrNull(1)
         val reid = top?.takeIf { sims[it]!! >= reidMin && (second == null || sims[it]!! - sims[second]!! >= margin) }
@@ -69,7 +74,7 @@ class TargetTracker(seed: Detection, private val reidMin: Double = 0.75, private
             else -> moved
         }
         if (pick == null) { lost++; return null }
-        val best = people[pick]
+        val best = cands[pick]
         val jumped = pick != moved
         if (jumped) { vx = 0.0; vy = 0.0 } else {
             vx = 0.5 * vx + 0.5 * (best.cx - box.cx) / steps
@@ -79,6 +84,18 @@ class TargetTracker(seed: Detection, private val reidMin: Double = 0.75, private
         remember(best.feature, sims[pick])
         lost = 0
         return best
+    }
+
+    /**
+     * The detector sometimes returns ONE box around two people standing close together. If that box holds the place
+     * where our person should be but is much wider than them, cut out a person-sized box on the side where they were.
+     */
+    private fun unmerge(d: Detection, px: Double, py: Double): Detection {
+        if (d.box.w <= 1.45 * box.w || d.height > 1.35 * box.h) return d
+        if (px !in d.box.x1..d.box.x2 || py !in d.box.y1..d.box.y2) return d
+        val w = box.w
+        val cx = px.coerceIn(d.box.x1 + w / 2, d.box.x2 - w / 2)
+        return Detection(Box(cx - w / 2, d.box.y1, cx + w / 2, d.box.y2), d.score, d.label, d.trackId, null, null)
     }
 
     /** Keep a small gallery of exemplars, only adding frames where we are confident it is the right person. */

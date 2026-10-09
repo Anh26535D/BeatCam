@@ -247,13 +247,13 @@ private fun Preview(s: UiState, vm: MainViewModel, playing: Boolean, scrubMs: Lo
         detectTapGestures { p ->
             val x = p.x / size.width * info.width; val y = p.y / size.height * info.height
             // smallest box containing the tap wins, so people standing in front of others stay selectable
-            s.people.withIndex().filter { (_, b) -> x in b.x1..b.x2 && y in b.y1..b.y2 }
-                .minByOrNull { (_, b) -> b.w * b.h }?.let { vm.select(it.index) }
+            s.people.withIndex().filter { (_, d) -> x in d.box.x1..d.box.x2 && y in d.box.y1..d.box.y2 }
+                .minByOrNull { (_, d) -> d.box.w * d.box.h }?.let { vm.select(it.index) }
         }
     }) {
         val kx = size.width / info.width; val ky = size.height / info.height
-        s.selected?.let { s.people.getOrNull(it) }?.let { sel ->
-            val c = cropAround(sel, info.width, info.height, s.shape, s.zoom)
+        s.selected?.let { s.people.getOrNull(it) }?.let { selDet ->
+            val c = cropAround(selDet.box, info.width, info.height, s.shape, s.zoom)
             val dim = Color(0xAA000000)
             val l = (c.x1 * kx).toFloat(); val t = (c.y1 * ky).toFloat(); val r = (c.x2 * kx).toFloat(); val b = (c.y2 * ky).toFloat()
             drawRect(dim, Offset.Zero, Size(size.width, t))
@@ -262,7 +262,8 @@ private fun Preview(s: UiState, vm: MainViewModel, playing: Boolean, scrubMs: Lo
             drawRect(dim, Offset(r, t), Size(size.width - r, b - t))
             drawRect(Color.White, Offset(l, t), Size(r - l, b - t), style = Stroke(2.dp.toPx()))
         }
-        s.people.forEachIndexed { i, p ->
+        s.people.forEachIndexed { i, det ->
+            val p = det.box
             val chosen = i == s.selected
             drawRect(if (chosen) Pick else Color.White.copy(alpha = 0.85f), Offset((p.x1 * kx).toFloat(), (p.y1 * ky).toFloat()),
                 Size((p.w * kx).toFloat(), (p.h * ky).toFloat()), style = Stroke(if (chosen) 3.dp.toPx() else 1.5.dp.toPx()))
