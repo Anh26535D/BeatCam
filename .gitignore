@@ -1,10 +1,8 @@
+build/
+.gradle/
+.kotlin/
+local.properties
+*.apk
+app/src/main/assets/*.tflite
+app/src/main/assets/*.task
 __pycache__/
-*.egg-info/
-.pytest_cache/
-*.pt
-*.mp4
-android/**/build/
-android/.gradle/
-android/local.properties
-android/app/src/main/assets/*.tflite
-android/app/src/main/assets/*.task
