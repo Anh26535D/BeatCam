@@ -228,6 +228,7 @@ class CoreTest {
         val steps = Planner(15.0, target = frames[0][0].box).plan(frames)
         assertEquals(100.0 + 10 * 6 + 40, steps[6].box!!.cx, 1.0) // straight-line interpolation across the gap
         assertTrue(steps.all { it.box != null })
+        assertTrue(steps.filterIndexed { i, _ -> i in 5..8 }.none { it.found } && steps.filterIndexed { i, _ -> i !in 5..8 }.all { it.found })
     }
 
     @Test fun cameraNeverLosesTheSubject() {

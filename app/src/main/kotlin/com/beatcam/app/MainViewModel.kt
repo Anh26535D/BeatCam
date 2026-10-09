@@ -18,7 +18,7 @@ import com.beatcam.core.TargetTracker
 import com.beatcam.core.CameraConfig
 import com.beatcam.core.FrameShape
 import com.beatcam.core.CropPath
-import com.beatcam.core.PunchEnvelope
+import com.beatcam.core.Step
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,16 +33,16 @@ import java.io.File
 enum class Phase { IDLE, READY, WORKING, DONE }
 
 /** Tools shown in the editor's bottom bar (like the Samsung editor's tool strip). */
-enum class Tool(val label: String) { SUBJECT("Chủ thể"), FRAME("Khung hình"), BEAT("Nhịp nhạc"), POSE("Tư thế"), BALL("Bóng") }
+enum class Tool(val label: String) { SUBJECT("Chủ thể"), FRAME("Khung hình") }
 
 data class UiState(
     val phase: Phase = Phase.IDLE,
     val source: Uri? = null,
     val thumb: Bitmap? = null,
     val info: VideoInfo? = null,
-    val beat: Boolean = true,
-    val pose: Boolean = false,
-    val sports: Boolean = false,
+    val steps: List<Step>? = null,          // tracking result (one step per analysis frame) once "Theo dõi" has run
+    val path: CropPath? = null,             // camera path built from [steps] for the chosen frame shape / zoom
+    val trackedPct: Int = 0,
     val tool: Tool? = Tool.SUBJECT,
     val thumbs: List<Bitmap> = emptyList(),
     val thumbStepMs: Long = 1000,
@@ -65,6 +65,7 @@ private fun listRecents(app: Application): List<File> =
     app.getExternalFilesDir(null)?.listFiles { f -> f.extension == "mp4" }?.sortedByDescending { it.lastModified() }.orEmpty()
 
 private const val TAG = "BeatCam"
+const val FPS = 15.0 // analysis rate
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(UiState(recents = listRecents(app)))
@@ -80,7 +81,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val (thumb, info) = withContext(Dispatchers.IO) { loadPreview(uri) }
             val step = maxOf(1000L, (info?.durationMs ?: 0) / 80)
-            _state.update { it.copy(phase = Phase.READY, source = uri, thumb = thumb, info = info, people = emptyList(), selected = null, previewMs = 0, thumbs = emptyList(), thumbStepMs = step, tool = Tool.SUBJECT) }
+            _state.update { it.copy(phase = Phase.READY, source = uri, thumb = thumb, info = info, people = emptyList(), selected = null, steps = null, path = null, previewMs = 0, thumbs = emptyList(), thumbStepMs = step, tool = Tool.SUBJECT) }
             seek(0)
             if (info != null) {
                 val strip = withContext(Dispatchers.IO) { loadStrip(uri, info, step) }
@@ -119,9 +120,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun previewTime(ms: Long) = _state.update { it.copy(previewMs = ms) }
-    fun select(i: Int?) = _state.update { it.copy(selected = i) }
-    fun setShape(v: FrameShape) = _state.update { it.copy(shape = v) }
-    fun setZoom(v: Float) = _state.update { it.copy(zoom = v) }
+    /** Choosing another person invalidates the tracking result. */
+    fun select(i: Int?) = _state.update { it.copy(selected = i, steps = null, path = null) }
+    fun setShape(v: FrameShape) = _state.update { it.copy(shape = v, path = buildPath(it.steps, it.info, v, it.zoom)) }
+    fun setZoom(v: Float) = _state.update { it.copy(zoom = v, path = buildPath(it.steps, it.info, it.shape, v)) }
+
+    private fun buildPath(steps: List<Step>?, info: VideoInfo?, shape: FrameShape, zoom: Float): CropPath? =
+        if (steps == null || info == null) null
+        else CropPath.build(steps, info.width, info.height, FPS, CameraConfig(aspect = shape.aspect, baseZoom = zoom.toDouble()), null, savgolWindow = 7)
 
     override fun onCleared() { previewer?.close() }
 
@@ -152,11 +158,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         bmp to VideoInfo(w, h, d)
     }.getOrDefault(null to null)
 
-    fun setBeat(v: Boolean) = _state.update { it.copy(beat = v) }
-    fun setPose(v: Boolean) = _state.update { it.copy(pose = v) }
-    fun setSports(v: Boolean) = _state.update { it.copy(sports = v) }
-
-    fun reset() = _state.update { UiState(recents = listRecents(getApplication()), beat = it.beat, pose = it.pose, sports = it.sports, shape = it.shape, zoom = it.zoom) }
+    fun reset() = _state.update { UiState(recents = listRecents(getApplication()), shape = it.shape, zoom = it.zoom) }
     fun dismissMessage() = _state.update { it.copy(message = null) }
 
     fun cancel() {
@@ -165,49 +167,68 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(phase = Phase.READY, message = "Đã huỷ") }
     }
 
-    fun start() {
+    /** Step 1: follow the chosen person through the whole clip. Shows the result on the preview for checking. */
+    fun track() {
         val s = _state.value
         val src = s.source ?: return
-        _state.update { it.copy(phase = Phase.WORKING, stage = "Đang phân tích âm thanh…", progress = 0f, message = null) }
+        val info = s.info ?: return
+        val target = s.selected?.let { s.people.getOrNull(it) }?.box
+        if (target == null) { _state.update { it.copy(message = "Chạm vào người cần theo dõi trước.") }; return }
+        _state.update { it.copy(phase = Phase.WORKING, stage = "Đang theo dõi người đã chọn…", progress = 0f, message = null) }
         job = viewModelScope.launch {
             try {
-                val ctx = getApplication<Application>()
-                val fps = 15.0
-                val (path, info) = withContext(Dispatchers.Default) {
-                    val punch = if (s.beat) PunchEnvelope(AudioAnalyzer.onsets(ctx, src), 30.0) else null
-                    _state.update { it.copy(stage = "Đang nhận diện chuyển động…", progress = 0.05f) }
-                    FrameAnalyzer(ctx, s.pose, s.sports, gpu = true).use { fa ->
-                        val info = fa.info(src)
-                        val target = s.selected?.let { s.people.getOrNull(it) }?.box
-                        val steps = fa.analyse(src, info, fps, target, s.previewMs, check = { ensureActive() }) { p ->
-                            _state.update { it.copy(progress = 0.05f + 0.55f * p) }
+                val steps = withContext(Dispatchers.Default) {
+                    FrameAnalyzer(getApplication(), usePose = false, sports = false, gpu = true).use { fa ->
+                        val out = fa.analyse(src, info, FPS, target, s.previewMs, check = { ensureActive() }) { p ->
+                            _state.update { it.copy(progress = p) }
                         }
-                        _state.update { it.copy(stats = fa.timings.summary(fa.onGpu)) }
                         Log.i(TAG, fa.timings.summary(fa.onGpu))
-                        CropPath.build(steps, info.width, info.height, fps, CameraConfig(aspect = s.shape.aspect, baseZoom = s.zoom.toDouble()), punch, savgolWindow = 7) to info
+                        _state.update { it.copy(stats = fa.timings.summary(fa.onGpu)) }
+                        out
                     }
                 }
-                _state.update { it.copy(stage = "Đang xuất video ${s.shape.label}…", progress = 0.6f) }
-                val dir = ctx.getExternalFilesDir(null)!!.also { it.mkdirs() }
-                val out = File(dir, "beatcam_${System.currentTimeMillis()}.mp4")
-                transformer = Reframer(ctx).export(src, out.path, path, info.width, info.height, s.shape,
-                    onProgress = { p -> _state.update { if (it.phase == Phase.WORKING) it.copy(progress = 0.6f + 0.4f * p) else it } },
-                    onDone = { r ->
-                        _state.update {
-                            r.fold(
-                                { _ -> it.copy(phase = Phase.DONE, output = out, saved = false, progress = 1f, recents = listRecents(getApplication())) },
-                                { e -> it.copy(phase = Phase.READY, message = "Xuất video thất bại: ${e.message}") },
-                            )
-                        }
-                    })
+                val pct = if (steps.isEmpty()) 0 else 100 * steps.count { it.found } / steps.size
+                Log.i(TAG, "tracked $pct% of ${steps.size} steps")
+                _state.update {
+                    it.copy(phase = Phase.READY, steps = steps, trackedPct = pct, progress = 1f,
+                        path = buildPath(steps, info, it.shape, it.zoom),
+                        message = if (pct < 60) "Chỉ theo dõi được $pct% khung hình. Kiểm tra lại trên timeline, hoặc chọn người ở đoạn rõ hơn." else null)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.e(TAG, "processing failed", e)
+                Log.e(TAG, "tracking failed", e)
                 val hint = if (e.message?.contains("asset", true) == true || e is java.io.FileNotFoundException)
                     " (thiếu model? chạy app/fetch_models.sh)" else ""
                 _state.update { it.copy(phase = Phase.READY, message = "Lỗi: ${e.message}$hint") }
             }
+        }
+    }
+
+    /** Step 2: render the video with the tracked camera path. */
+    fun export() {
+        val s = _state.value
+        val src = s.source ?: return
+        val info = s.info ?: return
+        val path = s.path ?: return
+        _state.update { it.copy(phase = Phase.WORKING, stage = "Đang xuất video ${s.shape.label}…", progress = 0f, message = null) }
+        try {
+            val ctx = getApplication<Application>()
+            val dir = ctx.getExternalFilesDir(null)!!.also { it.mkdirs() }
+            val out = File(dir, "beatcam_${System.currentTimeMillis()}.mp4")
+            transformer = Reframer(ctx).export(src, out.path, path, info.width, info.height, s.shape,
+                onProgress = { p -> _state.update { if (it.phase == Phase.WORKING) it.copy(progress = p) else it } },
+                onDone = { r ->
+                    _state.update {
+                        r.fold(
+                            { _ -> it.copy(phase = Phase.DONE, output = out, saved = false, progress = 1f, recents = listRecents(getApplication())) },
+                            { e -> Log.e(TAG, "export failed", e); it.copy(phase = Phase.READY, message = "Xuất video thất bại: ${e.message}") },
+                        )
+                    }
+                })
+        } catch (e: Exception) {
+            Log.e(TAG, "export failed", e)
+            _state.update { it.copy(phase = Phase.READY, message = "Lỗi: ${e.message}") }
         }
     }
 

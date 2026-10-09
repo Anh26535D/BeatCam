@@ -1,5 +1,9 @@
 # BeatCam for Android (Kotlin)
 
+**Current scope (v0.1): detect people -> user picks one -> track that person -> export.**
+Beat punch-zoom, pose-aware framing and ball prediction exist in `core/` (tested) but are intentionally not wired
+into the app until person tracking is solid.
+
 Offline "reframe to 9:16" editor: pick a video, get a smooth virtual-camera crop with beat-synced punch zoom,
 optional pose-aware and ball-intent framing.
 

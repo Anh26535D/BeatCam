@@ -3,7 +3,8 @@ package com.beatcam.core
 import kotlin.math.hypot
 
 /** What the camera should look at for one analysis step. */
-data class Step(val box: Box?, val leadX: Double = 0.0, val leadY: Double = 0.0, val widen: Double = 0.0)
+/** [found] = the chosen person was really detected at this step (false = interpolated or held from nearby steps). */
+data class Step(val box: Box?, val leadX: Double = 0.0, val leadY: Double = 0.0, val widen: Double = 0.0, val found: Boolean = true)
 
 /**
  * Turns the detections of every analysis step into camera targets (phases 1, 3 and 4).
@@ -40,7 +41,7 @@ class Planner(
                 val c = gesture.update(s.keypoints)
                 lx = c.dx * s.height; ly = c.dy * s.height; widen += c.widen
             }
-            Step(box, lx, ly, widen)
+            Step(box, lx, ly, widen, found = s != null)
         }
     }
 

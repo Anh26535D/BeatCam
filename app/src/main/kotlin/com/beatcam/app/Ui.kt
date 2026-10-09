@@ -178,7 +178,8 @@ private fun EditorScreen(s: UiState, vm: MainViewModel) {
     var scrubMs by remember { mutableStateOf<Long?>(null) }
     val info = s.info
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-        TopBar("Dự án mới", onBack = vm::reset, action = "Xuất", onAction = { playing = false; vm.start() })
+        TopBar("Dự án mới", onBack = vm::reset, action = if (s.steps == null) "Theo dõi" else "Xuất",
+            onAction = { playing = false; if (s.steps == null) vm.track() else vm.export() })
         if (info == null) {
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { Text("Không đọc được video này.", color = Gray) }
             return@Column
@@ -238,10 +239,12 @@ private fun Preview(s: UiState, vm: MainViewModel, playing: Boolean, scrubMs: Lo
         LaunchedEffect(view) {
             while (true) { view?.let { if (it.isPlaying) vm.previewTime(it.currentPosition.toLong()) }; delay(100) }
         }
+        TrackOverlay(s)
         return
     }
     val frame = if (scrubMs != null && s.thumbs.isNotEmpty()) s.thumbs[(scrubMs / s.thumbStepMs).toInt().coerceIn(0, s.thumbs.size - 1)] else s.thumb
     frame?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds) }
+    if (s.steps != null) { TrackOverlay(s); return }
     if (scrubMs != null) return
     Canvas(Modifier.fillMaxSize().pointerInput(s.people, info) {
         detectTapGestures { p ->
@@ -270,6 +273,32 @@ private fun Preview(s: UiState, vm: MainViewModel, playing: Boolean, scrubMs: Lo
         }
     }
     if (s.detecting) Text("Đang tìm người…", Modifier.padding(10.dp), color = Color.White, fontSize = 12.sp)
+}
+
+/** Shows the tracking result at the current time: the camera crop (white) and the followed person. */
+@Composable
+private fun TrackOverlay(s: UiState) {
+    val info = s.info ?: return
+    val steps = s.steps ?: return
+    val path = s.path ?: return
+    if (steps.isEmpty()) return
+    Canvas(Modifier.fillMaxSize()) {
+        val kx = size.width / info.width; val ky = size.height / info.height
+        val t = s.previewMs / 1000.0
+        val st = steps[(t * FPS).toInt().coerceIn(0, steps.size - 1)]
+        val c = path.at(t)
+        val dim = Color(0xAA000000)
+        val l = (c.x * kx).toFloat(); val tp = (c.y * ky).toFloat(); val r = ((c.x + c.w) * kx).toFloat(); val b = ((c.y + c.h) * ky).toFloat()
+        drawRect(dim, Offset.Zero, Size(size.width, tp))
+        drawRect(dim, Offset(0f, b), Size(size.width, size.height - b))
+        drawRect(dim, Offset(0f, tp), Size(l, b - tp))
+        drawRect(dim, Offset(r, tp), Size(size.width - r, b - tp))
+        drawRect(Color.White, Offset(l, tp), Size(r - l, b - tp), style = Stroke(2.dp.toPx()))
+        st.box?.let { bx ->
+            drawRect(if (st.found) Pick else Color(0xFFFF9500), Offset((bx.x1 * kx).toFloat(), (bx.y1 * ky).toFloat()),
+                Size((bx.w * kx).toFloat(), (bx.h * ky).toFloat()), style = Stroke(3.dp.toPx()))
+        }
+    }
 }
 
 /** Crop box (in source pixels) the camera would use when resting on [subject]; mirrors VirtualCamera.size. */
@@ -317,7 +346,7 @@ private fun ToolBar(s: UiState, vm: MainViewModel) = Row(
     horizontalArrangement = Arrangement.SpaceEvenly,
 ) {
     Tool.values().forEach { t ->
-        val on = when (t) { Tool.BEAT -> s.beat; Tool.POSE -> s.pose; Tool.BALL -> s.sports; else -> false }
+        val on = t == Tool.SUBJECT && s.steps != null // tracked
         val color = if (s.tool == t) Blue else Color.White
         Column(
             Modifier.width(76.dp).clip(RoundedCornerShape(14.dp)).clickable { vm.setTool(if (s.tool == t) null else t) }.padding(vertical = 8.dp),
@@ -340,16 +369,18 @@ private fun ToolPanel(tool: Tool, s: UiState, vm: MainViewModel) = Column(
 ) {
     when (tool) {
         Tool.SUBJECT -> {
-            Text("Chọn người cần theo dõi", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            Text(if (s.steps == null) "Chọn người cần theo dõi" else "Kết quả theo dõi", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
             Text(
                 when {
+                    s.steps != null -> "Đã theo dõi ${s.trackedPct}% khung hình. Khung vàng: phát hiện được. Khung cam: ước lượng khi mất dấu. Kéo timeline để kiểm tra rồi bấm Xuất."
                     s.detecting -> "Đang tìm người trong khung hình…"
                     s.people.isEmpty() -> "Không thấy ai ở thời điểm này. Kéo timeline sang đoạn có người."
                     s.selected == null -> "Chạm vào người trong video để chọn."
-                    else -> "Đã chọn 1 người (khung vàng). Chạm người khác để đổi."
+                    else -> "Đã chọn 1 người (khung vàng). Chạm người khác để đổi, rồi bấm Theo dõi."
                 },
                 color = Gray, fontSize = 13.sp,
             )
+            if (s.steps != null) Text("Chọn lại người", Modifier.clickable { vm.select(null) }.padding(vertical = 6.dp), color = Blue, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
         }
         Tool.FRAME -> {
             Text("Khung hình xuất ra", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
@@ -364,9 +395,6 @@ private fun ToolPanel(tool: Tool, s: UiState, vm: MainViewModel) = Column(
             Text("Độ gần: ${"%.1f".format(s.zoom)}×", color = Color.White, fontSize = 14.sp)
             Slider(s.zoom, vm::setZoom, valueRange = 1f..3f, colors = SliderDefaults.colors(thumbColor = Blue, activeTrackColor = Blue))
         }
-        Tool.BEAT -> SwitchRow("Giật zoom theo nhịp nhạc", "Zoom nhanh 5–10% ở mỗi nhịp trống kick và snare", s.beat, vm::setBeat)
-        Tool.POSE -> SwitchRow("Nhận diện tư thế", "Mở rộng khung khi giơ tay, dang tay hoặc ngồi thấp", s.pose, vm::setPose)
-        Tool.BALL -> SwitchRow("Theo bóng (thể thao)", "Theo bóng và đón đầu người nhận bóng", s.sports, vm::setSports)
     }
 }
 

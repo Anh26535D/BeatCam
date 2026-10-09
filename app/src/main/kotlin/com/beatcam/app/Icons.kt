@@ -29,24 +29,6 @@ fun ToolIcon(tool: Tool, tint: Color, size: Dp = 26.dp) = Canvas(Modifier.size(s
             drawLine(tint, Offset(w * 0.7f, w * 0.92f), Offset(w * 0.7f, w * 0.3f), st.width, StrokeCap.Round)
             drawLine(tint, Offset(w * 0.7f, w * 0.3f), Offset(w * 0.08f, w * 0.3f), st.width, StrokeCap.Round)
         }
-        Tool.BEAT -> { // equaliser bars
-            listOf(0.25f to 0.55f, 0.4f to 0.85f, 0.55f to 0.4f, 0.7f to 0.7f, 0.85f to 0.5f).forEach { (x, h) ->
-                drawLine(tint, Offset(w * x - w * 0.1f, w * (0.5f + h / 2)), Offset(w * x - w * 0.1f, w * (0.5f - h / 2)), st.width, StrokeCap.Round)
-            }
-        }
-        Tool.POSE -> { // stick figure
-            drawCircle(tint, w * 0.09f, Offset(w * 0.5f, w * 0.17f), style = st)
-            drawLine(tint, Offset(w * 0.5f, w * 0.28f), Offset(w * 0.5f, w * 0.6f), st.width, StrokeCap.Round)
-            drawLine(tint, Offset(w * 0.22f, w * 0.2f), Offset(w * 0.5f, w * 0.38f), st.width, StrokeCap.Round)
-            drawLine(tint, Offset(w * 0.78f, w * 0.2f), Offset(w * 0.5f, w * 0.38f), st.width, StrokeCap.Round)
-            drawLine(tint, Offset(w * 0.5f, w * 0.6f), Offset(w * 0.3f, w * 0.92f), st.width, StrokeCap.Round)
-            drawLine(tint, Offset(w * 0.5f, w * 0.6f), Offset(w * 0.7f, w * 0.92f), st.width, StrokeCap.Round)
-        }
-        Tool.BALL -> {
-            drawCircle(tint, w * 0.4f, Offset(w * 0.5f, w * 0.5f), style = st)
-            drawArc(tint, 20f, 140f, false, Offset(w * 0.1f, w * -0.2f), Size(w * 0.8f, w * 0.8f), style = st)
-            drawArc(tint, 200f, 140f, false, Offset(w * 0.1f, w * 0.4f), Size(w * 0.8f, w * 0.8f), style = st)
-        }
     }
 }
 
