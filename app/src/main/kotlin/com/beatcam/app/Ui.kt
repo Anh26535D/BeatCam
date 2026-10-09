@@ -425,6 +425,7 @@ private fun ResultScreen(s: UiState, vm: MainViewModel, onShare: () -> Unit) {
                 }, modifier = Modifier.fillMaxSize())
             }
         }
+        s.stats?.let { Text(it, Modifier.padding(horizontal = 20.dp), color = Gray, fontSize = 11.sp) }
         Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             PillButton(if (s.saved) "Đã lưu" else "Lưu vào thư viện", Blue, Modifier.weight(1f)) { if (!s.saved) vm.saveToGallery() }
             PillButton("Chia sẻ", Surf2, Modifier.weight(1f), onShare)

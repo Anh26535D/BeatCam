@@ -54,6 +54,7 @@ data class UiState(
     val progress: Float = 0f,
     val output: File? = null,
     val saved: Boolean = false,
+    val stats: String? = null,
     val message: String? = null,
 )
 
@@ -91,7 +92,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         previewJob = viewModelScope.launch {
             val (bmp, boxes) = try {
                 withContext(Dispatchers.Default) {
-                    val fa = previewer ?: FrameAnalyzer(getApplication(), false, false).also { previewer = it }
+                    val fa = previewer ?: FrameAnalyzer(getApplication(), false, false, gpu = false).also { previewer = it }
                     fa.peopleAt(src, info, ms)
                 }
             } catch (e: CancellationException) { throw e } catch (e: Exception) {
@@ -164,12 +165,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val (path, info) = withContext(Dispatchers.Default) {
                     val punch = if (s.beat) PunchEnvelope(AudioAnalyzer.onsets(ctx, src), 30.0) else null
                     _state.update { it.copy(stage = "Đang nhận diện chuyển động…", progress = 0.05f) }
-                    FrameAnalyzer(ctx, s.pose, s.sports).use { fa ->
+                    FrameAnalyzer(ctx, s.pose, s.sports, gpu = true).use { fa ->
                         val info = fa.info(src)
                         val target = s.selected?.let { s.people.getOrNull(it) }
                         val steps = fa.analyse(src, info, fps, target, s.previewMs, check = { ensureActive() }) { p ->
                             _state.update { it.copy(progress = 0.05f + 0.55f * p) }
                         }
+                        _state.update { it.copy(stats = fa.timings.summary(fa.onGpu)) }
                         CropPath.build(steps, info.width, info.height, fps, CameraConfig(aspect = s.shape.aspect, baseZoom = s.zoom.toDouble()), punch, savgolWindow = 7) to info
                     }
                 }

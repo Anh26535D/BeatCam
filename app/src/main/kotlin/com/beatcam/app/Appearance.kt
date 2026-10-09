@@ -14,23 +14,24 @@ import kotlin.math.sqrt
  * = [CNN embedding (MediaPipe ImageEmbedder, if the model asset is present), torso colour histogram], each L2-normalised
  * and scaled by 1/sqrt(2), so the dot product of two vectors is the mean of the two cosine similarities.
  */
-class Appearance(ctx: Context) : AutoCloseable {
-    private val embedder: ImageEmbedder? = runCatching {
+class Appearance(ctx: Context, gpu: Boolean = false) : AutoCloseable {
+    // GPU first (falls back to CPU if the delegate cannot start); no model file at all -> colour histogram only
+    private val embedder: ImageEmbedder? = Delegates.create(gpu) { base ->
         ImageEmbedder.createFromOptions(
             ctx,
             ImageEmbedder.ImageEmbedderOptions.builder()
-                .setBaseOptions(BaseOptions.builder().setModelAssetPath("mobilenet_v3_small.tflite").build())
+                .setBaseOptions(base.setModelAssetPath("mobilenet_v3_small.tflite").build())
                 .setRunningMode(RunningMode.IMAGE).setL2Normalize(true).build(),
         )
-    }.getOrNull() // no model file -> colour histogram only
+    }
 
-    /** [box] is in [bmp] pixel coordinates. */
-    fun describe(bmp: Bitmap, box: Box): DoubleArray? {
+    /** [box] is in [bmp] pixel coordinates. [useEmbedding]=false is much cheaper and returns a histogram-only vector. */
+    fun describe(bmp: Bitmap, box: Box, useEmbedding: Boolean = true): DoubleArray? {
         val x1 = box.x1.toInt().coerceIn(0, bmp.width - 1); val y1 = box.y1.toInt().coerceIn(0, bmp.height - 1)
         val x2 = box.x2.toInt().coerceIn(x1 + 1, bmp.width); val y2 = box.y2.toInt().coerceIn(y1 + 1, bmp.height)
         if (x2 - x1 < 12 || y2 - y1 < 24) return null
         val hist = histogram(bmp, x1, y1, x2, y2)
-        val emb = embedder?.let { e ->
+        val emb = embedder?.takeIf { useEmbedding }?.let { e ->
             runCatching {
                 val crop = Bitmap.createBitmap(bmp, x1, y1, x2 - x1, y2 - y1)
                 val v = e.embed(BitmapImageBuilder(crop).build()).embeddingResult().embeddings().first().floatEmbedding()

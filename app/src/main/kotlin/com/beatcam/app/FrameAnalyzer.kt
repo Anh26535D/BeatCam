@@ -20,22 +20,44 @@ import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarker
 data class VideoInfo(val width: Int, val height: Int, val durationMs: Long)
 
 /** Pass 1: samples frames at [fps], runs on-device detection (+pose) and turns them into camera targets. */
-class FrameAnalyzer(private val ctx: Context, private val usePose: Boolean, private val sports: Boolean) : AutoCloseable {
-    private val detector = ObjectDetector.createFromOptions(
-        ctx,
-        ObjectDetector.ObjectDetectorOptions.builder()
-            .setBaseOptions(BaseOptions.builder().setModelAssetPath("efficientdet_lite0.tflite").build())
-            .setRunningMode(RunningMode.IMAGE).setMaxResults(20).setScoreThreshold(0.3f)
-            .setCategoryAllowlist(listOf("person", "sports ball")).build(),
-    )
-    private val pose = if (usePose) PoseLandmarker.createFromOptions(
-        ctx,
-        PoseLandmarker.PoseLandmarkerOptions.builder()
-            .setBaseOptions(BaseOptions.builder().setModelAssetPath("pose_landmarker_lite.task").build())
-            .setRunningMode(RunningMode.IMAGE).setNumPoses(4).build(),
-    ) else null
+/** Wall-clock time spent per stage of the analysis (milliseconds). */
+class Timings {
+    var decode = 0L; var detect = 0L; var embed = 0L; var pose = 0L; var plan = 0L; var frames = 0
+    fun summary(onGpu: Boolean) =
+        "Phân tích ${frames} khung (${if (onGpu) "GPU" else "CPU"}): giải mã ${decode} ms • nhận diện ${detect} ms • vector ${embed} ms" +
+            (if (pose > 0) " • pose $pose ms" else "") + " • theo dõi $plan ms"
+}
+
+/**
+ * [gpu] runs the models on the GPU delegate. A MediaPipe GPU task must be used on the thread that created it, so
+ * create the analyzer and call [analyse] from the same thread (the preview analyzer therefore stays on the CPU).
+ */
+class FrameAnalyzer(
+    private val ctx: Context, private val usePose: Boolean, private val sports: Boolean, private val gpu: Boolean = false,
+) : AutoCloseable {
+    val timings = Timings()
+    var onGpu = false; private set
+    private val detector: ObjectDetector = Delegates.create(gpu) { base ->
+        ObjectDetector.createFromOptions(
+            ctx,
+            ObjectDetector.ObjectDetectorOptions.builder()
+                .setBaseOptions(base.setModelAssetPath("efficientdet_lite0.tflite").build())
+                .setRunningMode(RunningMode.IMAGE).setMaxResults(20).setScoreThreshold(0.3f)
+                .setCategoryAllowlist(listOf("person", "sports ball")).build(),
+        )
+    }!!.also { onGpu = Delegates.lastOnGpu }
+    private val pose = if (usePose) Delegates.create(gpu) { base ->
+        PoseLandmarker.createFromOptions(
+            ctx,
+            PoseLandmarker.PoseLandmarkerOptions.builder()
+                .setBaseOptions(base.setModelAssetPath("pose_landmarker_lite.task").build())
+                .setRunningMode(RunningMode.IMAGE).setNumPoses(4).build(),
+        )
+    } else null
+    private companion object { const val EMBED_EVERY = 2 }
     private val tracker = SimpleTracker()
-    private val appearance = Appearance(ctx)
+    private val appearance = Appearance(ctx, gpu)
+    private var frameNo = 0
 
     fun info(uri: Uri): VideoInfo {
         val r = MediaMetadataRetriever().apply { setDataSource(ctx, uri) }
@@ -63,13 +85,19 @@ class FrameAnalyzer(private val ctx: Context, private val usePose: Boolean, priv
         val frames = ArrayList<List<Detection>>(n)
         for (i in 0 until n) {
             check()
+            frameNo = i
+            val t0 = System.nanoTime()
             val bmp = r.getScaledFrameAtTime((i / fps * 1_000_000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST, aw, ah)
+            timings.decode += (System.nanoTime() - t0) / 1_000_000
             frames += if (bmp == null) emptyList() else detect(bmp, 1.0 / scale)
+            timings.frames++
             bmp?.recycle()
             if (i % 5 == 0) onProgress((i + 1f) / n)
         }
         r.release()
+        val t1 = System.nanoTime()
         return Planner(fps, usePose, sports, target, (targetTimeMs / 1000.0 * fps).toInt()).plan(frames)
+            .also { timings.plan = (System.nanoTime() - t1) / 1_000_000 }
     }
 
     /** A still frame at [timeMs] plus the people found in it (boxes in source-video pixels), for the "pick a person" screen. */
@@ -89,17 +117,26 @@ class FrameAnalyzer(private val ctx: Context, private val usePose: Boolean, priv
     private fun detect(bmp: Bitmap, up: Double): List<Detection> {
         val img = BitmapImageBuilder(bmp).build()
         val people = ArrayList<Detection>(); val balls = ArrayList<Detection>()
-        for (d in detector.detect(img).detections()) {
+        val t0 = System.nanoTime()
+        val found = detector.detect(img).detections()
+        timings.detect += (System.nanoTime() - t0) / 1_000_000
+        val embedThisFrame = frameNo % EMBED_EVERY == 0 // appearance vectors every few frames are plenty for re-identification
+        for (d in found) {
             val c = d.categories().first(); val b = d.boundingBox()
             val box = Box(b.left * up, b.top * up, b.right * up, b.bottom * up)
             if (c.categoryName() == "person") {
-                val feature = if (c.score() >= 0.4f && people.size < 8) appearance.describe(bmp, Box(b.left.toDouble(), b.top.toDouble(), b.right.toDouble(), b.bottom.toDouble())) else null
+                val t1 = System.nanoTime()
+                val feature = if (embedThisFrame && c.score() >= 0.4f && people.size < 8)
+                    appearance.describe(bmp, Box(b.left.toDouble(), b.top.toDouble(), b.right.toDouble(), b.bottom.toDouble())) else null
+                timings.embed += (System.nanoTime() - t1) / 1_000_000
                 people += Detection(box, c.score().toDouble(), Label.PERSON, feature = feature)
             }
             else balls += Detection(box, c.score().toDouble(), Label.BALL)
         }
         val tracked = tracker.update(people).toMutableList()
+        val t2 = System.nanoTime()
         val withPose = pose?.let { attachPose(it.detect(img).landmarks(), tracked, bmp, up) } ?: tracked
+        timings.pose += (System.nanoTime() - t2) / 1_000_000
         return withPose + balls
     }
 
