@@ -7,6 +7,7 @@ import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.MediaStore
+import android.util.Log
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -61,6 +62,8 @@ data class UiState(
 private fun listRecents(app: Application): List<File> =
     app.getExternalFilesDir(null)?.listFiles { f -> f.extension == "mp4" }?.sortedByDescending { it.lastModified() }.orEmpty()
 
+private const val TAG = "BeatCam"
+
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(UiState(recents = listRecents(app)))
     val state: StateFlow<UiState> = _state
@@ -70,7 +73,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var transformer: Transformer? = null
 
     fun pick(uri: Uri?) {
-        if (uri == null) return
+        if (uri == null) { Log.i(TAG, "no video picked"); return }
+        Log.i(TAG, "picked $uri")
         viewModelScope.launch {
             val (thumb, info) = withContext(Dispatchers.IO) { loadPreview(uri) }
             val step = maxOf(1000L, (info?.durationMs ?: 0) / 80)
@@ -96,6 +100,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     fa.peopleAt(src, info, ms)
                 }
             } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                Log.e(TAG, "person detection failed at ${ms} ms", e)
                 _state.update { it.copy(detecting = false, message = "Không nhận diện được người: ${e.message}") }
                 return@launch
             }
@@ -172,6 +177,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                             _state.update { it.copy(progress = 0.05f + 0.55f * p) }
                         }
                         _state.update { it.copy(stats = fa.timings.summary(fa.onGpu)) }
+                        Log.i(TAG, fa.timings.summary(fa.onGpu))
                         CropPath.build(steps, info.width, info.height, fps, CameraConfig(aspect = s.shape.aspect, baseZoom = s.zoom.toDouble()), punch, savgolWindow = 7) to info
                     }
                 }
@@ -191,6 +197,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                Log.e(TAG, "processing failed", e)
                 val hint = if (e.message?.contains("asset", true) == true || e is java.io.FileNotFoundException)
                     " (thiếu model? chạy app/fetch_models.sh)" else ""
                 _state.update { it.copy(phase = Phase.READY, message = "Lỗi: ${e.message}$hint") }
