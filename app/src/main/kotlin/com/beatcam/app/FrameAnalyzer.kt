@@ -10,12 +10,10 @@ import com.beatcam.core.Kp
 import com.beatcam.core.fusePeople
 import com.beatcam.core.Label
 import com.beatcam.core.Planner
-import com.beatcam.core.SimpleTracker
 import com.beatcam.core.Step
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
-import com.google.mediapipe.tasks.vision.objectdetector.ObjectDetector
 import com.google.mediapipe.tasks.vision.poselandmarker.PoseLandmarker
 
 data class VideoInfo(val width: Int, val height: Int, val durationMs: Long)
@@ -38,18 +36,8 @@ class FrameAnalyzer(
 ) : AutoCloseable {
     val timings = Timings()
     var onGpu = false; private set
-    // EfficientDet-Lite2 (448 px input) finds clearly more people than Lite0 (320 px); Lite0 is only a fallback
-    private val detectorModel = listOf("efficientdet_lite2.tflite", "efficientdet_lite0.tflite")
-        .first { m -> ctx.assets.list("")?.contains(m) == true }
-    private val detector: ObjectDetector = Delegates.create(gpu) { base ->
-        ObjectDetector.createFromOptions(
-            ctx,
-            ObjectDetector.ObjectDetectorOptions.builder()
-                .setBaseOptions(base.setModelAssetPath(detectorModel).build())
-                .setRunningMode(RunningMode.IMAGE).setMaxResults(20).setScoreThreshold(0.25f)
-                .setCategoryAllowlist(listOf("person", "sports ball")).build(),
-        )
-    }!!.also { onGpu = Delegates.lastOnGpu }
+    private val detector = YoloxDetector(ctx)
+    init { onGpu = false } // YOLOX runs on the ONNX Runtime CPU provider (4 threads)
     // Skeletons only when the pose option is on: the landmarker is built for one person and misses most others
     private val pose = if (!usePose) null else Delegates.create(gpu) { base ->
         PoseLandmarker.createFromOptions(
@@ -60,7 +48,6 @@ class FrameAnalyzer(
         )
     }
     private companion object { const val EMBED_EVERY = 2 }
-    private val tracker = SimpleTracker()
     private val appearance = Appearance(ctx, gpu)
     private var frameNo = 0
 
@@ -117,20 +104,14 @@ class FrameAnalyzer(
     }
 
     private fun detect(bmp: Bitmap, up: Double): List<Detection> {
-        val img = BitmapImageBuilder(bmp).build()
-        val detected = ArrayList<Detection>(); val balls = ArrayList<Detection>()
         val t0 = System.nanoTime()
-        val found = detector.detect(img).detections()
+        val found = detector.detect(bmp)
         timings.detect += (System.nanoTime() - t0) / 1_000_000
-        for (d in found) {
-            val c = d.categories().first(); val b = d.boundingBox()
-            val box = Box(b.left * up, b.top * up, b.right * up, b.bottom * up)
-            if (c.categoryName() == "person") detected += Detection(box, c.score().toDouble(), Label.PERSON)
-            else balls += Detection(box, c.score().toDouble(), Label.BALL)
-        }
-        // Skeletons are per person, so they separate people the box detector merged into one box.
+        val detected = found.map { d -> Detection(Box(d.box.x1 * up, d.box.y1 * up, d.box.x2 * up, d.box.y2 * up), d.score, Label.PERSON) }
+
+        // Skeletons (only when the pose option is on) are per person, so they can split a merged detector box.
         val t2 = System.nanoTime()
-        val skeletons = pose?.let { poseDetections(it.detect(img).landmarks(), bmp, up) }.orEmpty()
+        val skeletons = pose?.let { poseDetections(it.detect(BitmapImageBuilder(bmp).build()).landmarks(), bmp, up) }.orEmpty()
         timings.pose += (System.nanoTime() - t2) / 1_000_000
         val fused = fusePeople(detected, skeletons)
 
@@ -142,7 +123,8 @@ class FrameAnalyzer(
             Detection(p.box, p.score, Label.PERSON, p.trackId, p.keypoints, feature)
         }
         timings.embed += (System.nanoTime() - t1) / 1_000_000
-        return tracker.update(people) + balls
+        // NOTE: every detection is kept. (A tracker that only returned matched boxes used to drop low-score people.)
+        return people
     }
 
     /** One detection per skeleton: box from the landmarks (padded, extra headroom), keypoints in source pixels. */

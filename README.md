@@ -21,7 +21,7 @@ optional pose-aware and ball-intent framing.
 
 ## Build
 ```
-sh app/fetch_models.sh        # downloads efficientdet_lite2.tflite (person detector), pose_landmarker_lite.task and mobilenet_v3_small.tflite (person re-identification embeddings) into assets/
+sh app/fetch_models.sh        # downloads yolox_s.onnx (person detector, Apache-2.0), pose_landmarker_lite.task and mobilenet_v3_small.tflite (person re-identification embeddings) into assets/
 echo "sdk.dir=$ANDROID_HOME" > local.properties
 ./gradlew :core:test             # works without the Android SDK
 ./gradlew :app:assembleDebug

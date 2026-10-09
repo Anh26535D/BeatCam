@@ -13,6 +13,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        ndk { abiFilters += "arm64-v8a" } // real phones (Galaxy S25 etc.); add "x86_64" to run on an emulator
     }
     buildTypes {
         release { isMinifyEnabled = false }
@@ -23,7 +24,7 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
-    androidResources { noCompress += listOf("tflite", "task") }
+    androidResources { noCompress += listOf("tflite", "task", "onnx") }
 }
 
 dependencies {
@@ -40,5 +41,6 @@ dependencies {
     implementation("androidx.media3:media3-transformer:1.5.1")
     implementation("androidx.media3:media3-effect:1.5.1")
     implementation("androidx.media3:media3-common:1.5.1")
-    implementation("com.google.mediapipe:tasks-vision:0.10.26.1")
+    implementation("com.google.mediapipe:tasks-vision:0.10.26.1") // image embedder + optional pose
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.31.0") // YOLOX person detector
 }

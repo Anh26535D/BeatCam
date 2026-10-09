@@ -274,6 +274,28 @@ class CoreTest {
         assertEquals(9, m?.trackId)
     }
 
+    @Test fun yoloxDecodeAndNms() {
+        val out = FloatArray(Yolox.rows() * Yolox.ROW)
+        fun put(row: Int, x: Float, y: Float, w: Double, h: Double, obj: Float, person: Float) {
+            val o = row * Yolox.ROW
+            out[o] = x; out[o + 1] = y; out[o + 2] = Math.log(w).toFloat(); out[o + 3] = Math.log(h).toFloat(); out[o + 4] = obj; out[o + 5] = person
+        }
+        // stride 8 grid is 80x80: cell (gx=10, gy=20) -> centre ((0.5+10)*8, (0.5+20)*8) = (84, 164), size 40x80 (5x10 cells)
+        put(20 * 80 + 10, 0.5f, 0.5f, 5.0, 10.0, 0.9f, 0.9f)
+        put(20 * 80 + 11, 0.5f, 0.5f, 5.0, 10.0, 0.9f, 0.7f)      // near-duplicate, lower score -> suppressed by NMS
+        // stride 32 grid (20x20) starts at row 6400+1600: cell (gx=15, gy=5): centre (496, 176), size 64x128
+        put(6400 + 1600 + 5 * 20 + 15, 0.5f, 0.5f, 2.0, 4.0, 0.8f, 0.8f)
+        put(100, 0.5f, 0.5f, 3.0, 3.0, 0.4f, 0.4f)                 // 0.16 < threshold -> ignored
+        val dets = Yolox.decodePersons(out, ratio = 0.5, imgW = 1280, imgH = 1280)
+        assertEquals(2, dets.size)
+        val a = dets[0].box                                          // pixels of the original image = network px / 0.5
+        assertEquals((84.0 - 20) / 0.5, a.x1, 1e-3); assertEquals((164.0 - 40) / 0.5, a.y1, 1e-3)
+        assertEquals(40.0 / 0.5, a.w, 1e-3); assertEquals(80.0 / 0.5, a.h, 1e-3)
+        assertEquals(0.81, dets[0].score, 1e-3)
+        assertEquals((496.0 - 32) / 0.5, dets[1].box.x1, 1e-3)
+        assertEquals(0.5, Yolox.ratio(1280, 720) , 1e-9)
+    }
+
     @Test fun frameShapeAspect() {
         assertEquals(9.0 / 16, FrameShape.PORTRAIT_9_16.aspect, 1e-9)
         assertEquals(1.0, FrameShape.SQUARE.aspect)
