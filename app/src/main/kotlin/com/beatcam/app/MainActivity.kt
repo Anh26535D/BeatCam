@@ -13,7 +13,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            BeatCamTheme { BeatCamScreen(vm) { startActivity(vm.shareIntent()) } }
+            BeatCamTheme { BeatCamApp(vm) { startActivity(vm.shareIntent()) } }
         }
     }
 }

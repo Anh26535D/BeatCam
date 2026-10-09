@@ -29,6 +29,9 @@ import java.io.File
 
 enum class Phase { IDLE, READY, WORKING, DONE }
 
+/** Tools shown in the editor's bottom bar (like the Samsung editor's tool strip). */
+enum class Tool(val label: String) { SUBJECT("Chủ thể"), FRAME("Khung hình"), BEAT("Nhịp nhạc"), POSE("Tư thế"), BALL("Bóng") }
+
 data class UiState(
     val phase: Phase = Phase.IDLE,
     val source: Uri? = null,
@@ -37,6 +40,10 @@ data class UiState(
     val beat: Boolean = true,
     val pose: Boolean = false,
     val sports: Boolean = false,
+    val tool: Tool? = Tool.SUBJECT,
+    val thumbs: List<Bitmap> = emptyList(),
+    val thumbStepMs: Long = 1000,
+    val recents: List<File> = emptyList(),
     val shape: FrameShape = FrameShape.PORTRAIT_9_16,
     val zoom: Float = 1.25f,
     val people: List<Box> = emptyList(),
@@ -50,8 +57,11 @@ data class UiState(
     val message: String? = null,
 )
 
+private fun listRecents(app: Application): List<File> =
+    app.getExternalFilesDir(null)?.listFiles { f -> f.extension == "mp4" }?.sortedByDescending { it.lastModified() }.orEmpty()
+
 class MainViewModel(app: Application) : AndroidViewModel(app) {
-    private val _state = MutableStateFlow(UiState())
+    private val _state = MutableStateFlow(UiState(recents = listRecents(app)))
     val state: StateFlow<UiState> = _state
     private var job: Job? = null
     private var previewJob: Job? = null
@@ -62,8 +72,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (uri == null) return
         viewModelScope.launch {
             val (thumb, info) = withContext(Dispatchers.IO) { loadPreview(uri) }
-            _state.update { it.copy(phase = Phase.READY, source = uri, thumb = thumb, info = info, people = emptyList(), selected = null, previewMs = 0) }
+            val step = maxOf(1000L, (info?.durationMs ?: 0) / 80)
+            _state.update { it.copy(phase = Phase.READY, source = uri, thumb = thumb, info = info, people = emptyList(), selected = null, previewMs = 0, thumbs = emptyList(), thumbStepMs = step, tool = Tool.SUBJECT) }
             seek(0)
+            if (info != null) {
+                val strip = withContext(Dispatchers.IO) { loadStrip(uri, info, step) }
+                _state.update { it.copy(thumbs = strip) }
+            }
         }
     }
 
@@ -98,6 +113,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() { previewer?.close() }
 
+    private fun loadStrip(uri: Uri, info: VideoInfo, step: Long): List<Bitmap> = runCatching {
+        val r = MediaMetadataRetriever().apply { setDataSource(getApplication(), uri) }
+        val h = 120; val w = maxOf(1, h * info.width / info.height)
+        val out = (0 until info.durationMs step step).mapNotNull {
+            r.getScaledFrameAtTime(it * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, w, h)
+        }
+        r.release()
+        out
+    }.getOrDefault(emptyList())
+
+    fun setTool(t: Tool?) = _state.update { it.copy(tool = t) }
+
+    /** Open a previously exported video on the result screen. */
+    fun openOutput(f: File) = _state.update { it.copy(phase = Phase.DONE, output = f, saved = false) }
+
     private fun loadPreview(uri: Uri): Pair<Bitmap?, VideoInfo?> = runCatching {
         val r = MediaMetadataRetriever().apply { setDataSource(getApplication(), uri) }
         val bmp = r.getFrameAtTime(0)
@@ -114,7 +144,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setPose(v: Boolean) = _state.update { it.copy(pose = v) }
     fun setSports(v: Boolean) = _state.update { it.copy(sports = v) }
 
-    fun reset() = _state.update { UiState(beat = it.beat, pose = it.pose, sports = it.sports, shape = it.shape, zoom = it.zoom) }
+    fun reset() = _state.update { UiState(recents = listRecents(getApplication()), beat = it.beat, pose = it.pose, sports = it.sports, shape = it.shape, zoom = it.zoom) }
     fun dismissMessage() = _state.update { it.copy(message = null) }
 
     fun cancel() {
@@ -151,7 +181,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     onDone = { r ->
                         _state.update {
                             r.fold(
-                                { _ -> it.copy(phase = Phase.DONE, output = out, saved = false, progress = 1f) },
+                                { _ -> it.copy(phase = Phase.DONE, output = out, saved = false, progress = 1f, recents = listRecents(getApplication())) },
                                 { e -> it.copy(phase = Phase.READY, message = "Xuất video thất bại: ${e.message}") },
                             )
                         }
