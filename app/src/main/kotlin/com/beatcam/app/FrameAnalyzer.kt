@@ -38,16 +38,20 @@ class FrameAnalyzer(
 ) : AutoCloseable {
     val timings = Timings()
     var onGpu = false; private set
+    // EfficientDet-Lite2 (448 px input) finds clearly more people than Lite0 (320 px); Lite0 is only a fallback
+    private val detectorModel = listOf("efficientdet_lite2.tflite", "efficientdet_lite0.tflite")
+        .first { m -> ctx.assets.list("")?.contains(m) == true }
     private val detector: ObjectDetector = Delegates.create(gpu) { base ->
         ObjectDetector.createFromOptions(
             ctx,
             ObjectDetector.ObjectDetectorOptions.builder()
-                .setBaseOptions(base.setModelAssetPath("efficientdet_lite0.tflite").build())
-                .setRunningMode(RunningMode.IMAGE).setMaxResults(20).setScoreThreshold(0.3f)
+                .setBaseOptions(base.setModelAssetPath(detectorModel).build())
+                .setRunningMode(RunningMode.IMAGE).setMaxResults(20).setScoreThreshold(0.25f)
                 .setCategoryAllowlist(listOf("person", "sports ball")).build(),
         )
     }!!.also { onGpu = Delegates.lastOnGpu }
-    private val pose = Delegates.create(gpu) { base ->
+    // Skeletons only when the pose option is on: the landmarker is built for one person and misses most others
+    private val pose = if (!usePose) null else Delegates.create(gpu) { base ->
         PoseLandmarker.createFromOptions(
             ctx,
             PoseLandmarker.PoseLandmarkerOptions.builder()
