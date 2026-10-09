@@ -37,6 +37,8 @@ class Detection(
     val label: Label = Label.PERSON,
     var trackId: Int? = null,
     val keypoints: Array<DoubleArray>? = null,
+    /** Appearance descriptor (normalised colour histogram of the torso) used to re-identify the chosen person. */
+    val feature: DoubleArray? = null,
 ) {
     val cx get() = box.cx
     val cy get() = box.cy

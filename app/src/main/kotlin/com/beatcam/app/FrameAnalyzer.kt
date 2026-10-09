@@ -35,6 +35,7 @@ class FrameAnalyzer(private val ctx: Context, private val usePose: Boolean, priv
             .setRunningMode(RunningMode.IMAGE).setNumPoses(4).build(),
     ) else null
     private val tracker = SimpleTracker()
+    private val appearance = Appearance(ctx)
 
     fun info(uri: Uri): VideoInfo {
         val r = MediaMetadataRetriever().apply { setDataSource(ctx, uri) }
@@ -54,20 +55,21 @@ class FrameAnalyzer(private val ctx: Context, private val usePose: Boolean, priv
         check: () -> Unit = {}, onProgress: (Float) -> Unit,
     ): List<Step> {
         val r = MediaMetadataRetriever().apply { setDataSource(ctx, uri) }
-        val planner = Planner(fps, usePose, sports, target, (targetTimeMs / 1000.0 * fps).toInt())
         val scale = minOf(1.0, 640.0 / maxOf(info.width, info.height))
         val aw = (info.width * scale).toInt(); val ah = (info.height * scale).toInt()
         val n = (info.durationMs / 1000.0 * fps).toInt().coerceAtLeast(1)
-        val steps = ArrayList<Step>(n)
+        // Pass A: detect everything once. Pass B (Planner.plan) then follows the chosen person forwards and backwards
+        // in time over these stored detections, using position AND appearance vectors to re-find them if focus is lost.
+        val frames = ArrayList<List<Detection>>(n)
         for (i in 0 until n) {
             check()
             val bmp = r.getScaledFrameAtTime((i / fps * 1_000_000).toLong(), MediaMetadataRetriever.OPTION_CLOSEST, aw, ah)
-            steps += planner.step(if (bmp == null) emptyList() else detect(bmp, 1.0 / scale))
+            frames += if (bmp == null) emptyList() else detect(bmp, 1.0 / scale)
             bmp?.recycle()
             if (i % 5 == 0) onProgress((i + 1f) / n)
         }
         r.release()
-        return steps
+        return Planner(fps, usePose, sports, target, (targetTimeMs / 1000.0 * fps).toInt()).plan(frames)
     }
 
     /** A still frame at [timeMs] plus the people found in it (boxes in source-video pixels), for the "pick a person" screen. */
@@ -90,7 +92,10 @@ class FrameAnalyzer(private val ctx: Context, private val usePose: Boolean, priv
         for (d in detector.detect(img).detections()) {
             val c = d.categories().first(); val b = d.boundingBox()
             val box = Box(b.left * up, b.top * up, b.right * up, b.bottom * up)
-            if (c.categoryName() == "person") people += Detection(box, c.score().toDouble(), Label.PERSON)
+            if (c.categoryName() == "person") {
+                val feature = if (c.score() >= 0.4f && people.size < 8) appearance.describe(bmp, Box(b.left.toDouble(), b.top.toDouble(), b.right.toDouble(), b.bottom.toDouble())) else null
+                people += Detection(box, c.score().toDouble(), Label.PERSON, feature = feature)
+            }
             else balls += Detection(box, c.score().toDouble(), Label.BALL)
         }
         val tracked = tracker.update(people).toMutableList()
@@ -107,10 +112,10 @@ class FrameAnalyzer(private val ctx: Context, private val usePose: Boolean, priv
             val i = out.indices.filter { out[it].label == Label.PERSON }.maxByOrNull { out[it].box.iou(pb) } ?: continue
             if (out[i].box.iou(pb) < 0.2) continue
             val o = out[i]
-            out[i] = Detection(o.box, o.score, o.label, o.trackId, Kp.fromMediaPipe33(pts))
+            out[i] = Detection(o.box, o.score, o.label, o.trackId, Kp.fromMediaPipe33(pts), o.feature)
         }
         return out
     }
 
-    override fun close() { detector.close(); pose?.close() }
+    override fun close() { detector.close(); pose?.close(); appearance.close() }
 }

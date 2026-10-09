@@ -170,19 +170,76 @@ class CoreTest {
         assertEquals(1.0, CropPath(emptyList(), 15.0, null).at(1.0).w)
     }
 
+    private fun hist(i: Int) = DoubleArray(8) { if (it == i) 1.0 else 0.0 }
+    private fun person(id: Int, x: Double, y: Double = 300.0, colour: Int = id) =
+        Detection(box(x, y, x + 80, y + 200), 0.9, trackId = id, feature = hist(colour))
+
     @Test fun followsSelectedPerson() {
-        fun person(id: Int, x: Double) = Detection(box(x, 300.0, x + 80, 500.0), 0.9, trackId = id)
-        val left = box(100.0, 300.0, 180.0, 500.0); val right = box(900.0, 300.0, 980.0, 500.0)
-        val planner = Planner(15.0, target = right, targetFrame = 3)
-        val steps = (0 until 20).map { planner.step(listOf(person(1, 100.0 + it), person(2, 900.0 + it))) }
-        assertEquals(right.cx, steps[0].box!!.cx, 1e-6)           // before the selection frame: rests on the pick
-        assertTrue(steps.drop(3).all { it.box!!.cx > 800 })       // afterwards tracks person 2, not the bigger/left one
-        assertTrue(left.cx < 300)
-        // person 2 disappears for a while and comes back: still person 2
-        val p2 = Planner(15.0, target = right, targetFrame = 0)
-        p2.step(listOf(person(1, 100.0), person(2, 900.0)))
-        repeat(40) { p2.step(listOf(person(1, 100.0))) }
-        assertTrue(p2.step(listOf(person(1, 100.0), person(2, 905.0))).box!!.cx > 800)
+        val right = box(900.0, 300.0, 980.0, 500.0)
+        val frames = (0 until 20).map { listOf(person(1, 100.0 + it), person(2, 900.0 + it)) }
+        val steps = Planner(15.0, target = right, targetFrame = 3).plan(frames)
+        assertTrue(steps.all { it.box!!.cx > 800 }, "camera target must always be the chosen (right) person, even before step 3")
+    }
+
+    @Test fun selectionLaterInClipAlsoCoversEarlierFrames() {
+        // chosen person walks left->right; selected at step 10 -> steps 0..9 must follow them backwards in time
+        val frames = (0 until 30).map { listOf(person(1, 100.0 + 20 * it), person(2, 1500.0, colour = 5)) }
+        val target = frames[10][0].box
+        val steps = Planner(15.0, target = target, targetFrame = 10).plan(frames)
+        for (i in 0 until 30) assertEquals(frames[i][0].box.cx, steps[i].box!!.cx, 1.0, "step $i")
+    }
+
+    @Test fun keepsIdentityWhenPeopleCrossAndIdsSwap() {
+        // A (colour 1) and B (colour 2) walk towards each other, cross, and the detector swaps their track ids
+        val frames = (0 until 40).map { i ->
+            val a = person(if (i < 20) 1 else 2, 200.0 + 25 * i, colour = 1)
+            val b = person(if (i < 20) 2 else 1, 1200.0 - 25 * i, colour = 2)
+            listOf(a, b)
+        }
+        val steps = Planner(15.0, target = frames[0][0].box, targetFrame = 0).plan(frames)
+        for (i in 0 until 40) assertEquals(200.0 + 25 * i + 40, steps[i].box!!.cx, 1.0, "step $i")
+    }
+
+    @Test fun reidentifiesByLookAfterLongAbsenceFarAway() {
+        // chosen person (look 1) leaves for 3 s and comes back 6 heights away among a decoy with a different look
+        val frames = (0 until 90).map { i ->
+            when {
+                i < 20 -> listOf(person(1, 200.0 + 5 * i, colour = 1), person(2, 1500.0, colour = 2))
+                i < 65 -> listOf(person(2, 1500.0, colour = 2))
+                else -> listOf(person(3, 1500.0, colour = 2), person(4, 1000.0 + 3 * (i - 65), y = 900.0, colour = 1))
+            }
+        }
+        val steps = Planner(15.0, target = frames[0][0].box, targetFrame = 0).plan(frames)
+        assertTrue(steps[80].box!!.cx < 1200, "after returning, camera must go to the chosen person, not the decoy at 1500: ${steps[80].box}")
+    }
+
+    @Test fun jumpsBackWhenMotionPicksSomeoneElse() {
+        // the decoy stands exactly where the chosen person was heading; the real one appears elsewhere with the right look
+        val frames = (0 until 40).map { i ->
+            if (i < 10) listOf(person(1, 300.0 + 10 * i, colour = 1))
+            else listOf(person(5, 300.0 + 10 * i, colour = 2), person(1, 1400.0, colour = 1))
+        }
+        val steps = Planner(15.0, target = frames[0][0].box).plan(frames)
+        assertTrue(steps[30].box!!.cx > 1300, "${steps[30].box}")
+    }
+
+    @Test fun interpolatesShortGapsAndHoldsLongOnes() {
+        val frames = (0 until 20).map { i -> if (i in 5..8) emptyList() else listOf(person(1, 100.0 + 10 * i)) }
+        val steps = Planner(15.0, target = frames[0][0].box).plan(frames)
+        assertEquals(100.0 + 10 * 6 + 40, steps[6].box!!.cx, 1.0) // straight-line interpolation across the gap
+        assertTrue(steps.all { it.box != null })
+    }
+
+    @Test fun cameraNeverLosesTheSubject() {
+        // fast sprint left -> right across a 1920 frame; the chosen person's centre must stay inside the crop's middle
+        val steps = List(45) { Step(box(100.0 + 38 * it, 400.0, 180.0 + 38 * it, 700.0)) }
+        val path = CropPath.build(steps, 1920, 1080, 15.0, CameraConfig(), null, savgolWindow = 7)
+        for (i in steps.indices) {
+            val c = path.at(i / 15.0); val b = steps[i].box!!
+            val rel = (b.cx - c.x) / c.w
+            val limit = if (c.x <= 1e-6 || c.x + c.w >= 1920 - 1e-6) 0.0 else 0.28 // frame edges can force an off-centre subject
+            assertTrue(rel >= limit && rel <= 1.0 - limit && b.cx in c.x..(c.x + c.w), "step $i rel=$rel")
+        }
     }
 
     @Test fun frameShapeAspect() {

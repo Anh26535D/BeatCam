@@ -19,9 +19,9 @@ internal fun clampTo(v: Double, lo: Double, hi: Double) = maxOf(lo, minOf(v, hi)
 data class CameraConfig(
     val aspect: Double = 9.0 / 16,      // output width / height
     val baseZoom: Double = 1.25,        // >1 leaves room to pan horizontally and to widen
-    val margin: Double = 0.18,          // dead-zone: fraction of crop size kept as safe border
-    val minCutoff: Double = 0.8,
-    val beta: Double = 0.01,
+    val margin: Double = 0.10,          // dead-zone: fraction of crop size kept as safe border
+    val minCutoff: Double = 1.2,
+    val beta: Double = 0.03,
     val attack: Double = 0.35,          // lead-room smoothing per step when offset grows (fast)
     val release: Double = 0.03,         // ... and when it relaxes to centre (slow)
     val maxWiden: Double = 0.5,
