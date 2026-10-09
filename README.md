@@ -22,7 +22,13 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 ./gradlew :core:test             # works without the Android SDK
 ./gradlew :app:assembleDebug
 ```
-Requires JDK 17+, Android SDK 35. minSdk 26.
+Requires **JDK 17+** (Gradle 9 and AGP 8.x do not run on JDK 11) and Android SDK 35. minSdk 26.
+
+If you see "JDK 11 isn't compatible with Gradle", point `JAVA_HOME` (or Android Studio's Gradle JDK:
+Settings > Build Tools > Gradle > Gradle JDK) at JDK 17+, e.g. Android Studio's bundled JBR:
+```
+export JAVA_HOME="/path/to/Android Studio/jbr"   # macOS: /Applications/Android Studio.app/Contents/jbr/Contents/Home
+```
 
 ## Design notes
 - Analysis runs at 15 fps; the camera path is interpolated to video timestamps and the punch zoom is applied at
