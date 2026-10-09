@@ -11,7 +11,9 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.transformer.Transformer
+import com.beatcam.core.Box
 import com.beatcam.core.CameraConfig
+import com.beatcam.core.FrameShape
 import com.beatcam.core.CropPath
 import com.beatcam.core.PunchEnvelope
 import kotlinx.coroutines.CancellationException
@@ -35,6 +37,12 @@ data class UiState(
     val beat: Boolean = true,
     val pose: Boolean = false,
     val sports: Boolean = false,
+    val shape: FrameShape = FrameShape.PORTRAIT_9_16,
+    val zoom: Float = 1.25f,
+    val people: List<Box> = emptyList(),
+    val selected: Int? = null,
+    val previewMs: Long = 0,
+    val detecting: Boolean = false,
     val stage: String = "",
     val progress: Float = 0f,
     val output: File? = null,
@@ -46,15 +54,49 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state
     private var job: Job? = null
+    private var previewJob: Job? = null
+    private var previewer: FrameAnalyzer? = null
     private var transformer: Transformer? = null
 
     fun pick(uri: Uri?) {
         if (uri == null) return
         viewModelScope.launch {
             val (thumb, info) = withContext(Dispatchers.IO) { loadPreview(uri) }
-            _state.update { UiState(Phase.READY, uri, thumb, info, it.beat, it.pose, it.sports) }
+            _state.update { it.copy(phase = Phase.READY, source = uri, thumb = thumb, info = info, people = emptyList(), selected = null, previewMs = 0) }
+            seek(0)
         }
     }
+
+    /** Show the frame at [ms] and detect the people in it so the user can tap one. */
+    fun seek(ms: Long) {
+        val src = _state.value.source ?: return
+        val info = _state.value.info ?: return
+        previewJob?.cancel()
+        _state.update { it.copy(previewMs = ms, detecting = true) }
+        previewJob = viewModelScope.launch {
+            val (bmp, boxes) = try {
+                withContext(Dispatchers.Default) {
+                    val fa = previewer ?: FrameAnalyzer(getApplication(), false, false).also { previewer = it }
+                    fa.peopleAt(src, info, ms)
+                }
+            } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                _state.update { it.copy(detecting = false, message = "Không nhận diện được người: ${e.message}") }
+                return@launch
+            }
+            _state.update {
+                // default to the biggest person; the user taps to pick someone else
+                val big = boxes.indices.maxByOrNull { i -> boxes[i].w * boxes[i].h }
+                it.copy(thumb = bmp ?: it.thumb, people = boxes, selected = big, detecting = false)
+            }
+        }
+    }
+
+    fun previewTime(ms: Long) = _state.update { it.copy(previewMs = ms) }
+    fun select(i: Int?) = _state.update { it.copy(selected = i) }
+    fun setShape(v: FrameShape) = _state.update { it.copy(shape = v) }
+    fun setZoom(v: Float) = _state.update { it.copy(zoom = v) }
+
+    override fun onCleared() { previewer?.close() }
 
     private fun loadPreview(uri: Uri): Pair<Bitmap?, VideoInfo?> = runCatching {
         val r = MediaMetadataRetriever().apply { setDataSource(getApplication(), uri) }
@@ -72,7 +114,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setPose(v: Boolean) = _state.update { it.copy(pose = v) }
     fun setSports(v: Boolean) = _state.update { it.copy(sports = v) }
 
-    fun reset() = _state.update { UiState(beat = it.beat, pose = it.pose, sports = it.sports) }
+    fun reset() = _state.update { UiState(beat = it.beat, pose = it.pose, sports = it.sports, shape = it.shape, zoom = it.zoom) }
     fun dismissMessage() = _state.update { it.copy(message = null) }
 
     fun cancel() {
@@ -94,16 +136,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     _state.update { it.copy(stage = "Đang nhận diện chuyển động…", progress = 0.05f) }
                     FrameAnalyzer(ctx, s.pose, s.sports).use { fa ->
                         val info = fa.info(src)
-                        val steps = fa.analyse(src, info, fps, check = { ensureActive() }) { p ->
+                        val target = s.selected?.let { s.people.getOrNull(it) }
+                        val steps = fa.analyse(src, info, fps, target, s.previewMs, check = { ensureActive() }) { p ->
                             _state.update { it.copy(progress = 0.05f + 0.55f * p) }
                         }
-                        CropPath.build(steps, info.width, info.height, fps, CameraConfig(), punch, savgolWindow = 7) to info
+                        CropPath.build(steps, info.width, info.height, fps, CameraConfig(aspect = s.shape.aspect, baseZoom = s.zoom.toDouble()), punch, savgolWindow = 7) to info
                     }
                 }
-                _state.update { it.copy(stage = "Đang xuất video 9:16…", progress = 0.6f) }
+                _state.update { it.copy(stage = "Đang xuất video ${s.shape.label}…", progress = 0.6f) }
                 val dir = ctx.getExternalFilesDir(null)!!.also { it.mkdirs() }
                 val out = File(dir, "beatcam_${System.currentTimeMillis()}.mp4")
-                transformer = Reframer(ctx).export(src, out.path, path, info.width, info.height,
+                transformer = Reframer(ctx).export(src, out.path, path, info.width, info.height, s.shape,
                     onProgress = { p -> _state.update { if (it.phase == Phase.WORKING) it.copy(progress = 0.6f + 0.4f * p) else it } },
                     onDone = { r ->
                         _state.update {

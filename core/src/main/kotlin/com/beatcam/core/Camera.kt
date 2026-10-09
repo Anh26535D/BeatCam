@@ -3,6 +3,19 @@ package com.beatcam.core
 import kotlin.math.abs
 import kotlin.math.min
 
+/** Output frame shapes offered to the user (pixel size of the exported video). */
+enum class FrameShape(val label: String, val outW: Int, val outH: Int) {
+    PORTRAIT_9_16("9:16 dọc", 1080, 1920),
+    PORTRAIT_4_5("4:5", 1080, 1350),
+    SQUARE("1:1 vuông", 1080, 1080),
+    LANDSCAPE_16_9("16:9 ngang", 1920, 1080);
+
+    val aspect get() = outW.toDouble() / outH
+}
+
+/** Like coerceIn but never throws: if the range is empty (hi < lo, e.g. crop wider than frame by rounding) lo wins. */
+internal fun clampTo(v: Double, lo: Double, hi: Double) = maxOf(lo, minOf(v, hi))
+
 data class CameraConfig(
     val aspect: Double = 9.0 / 16,      // output width / height
     val baseZoom: Double = 1.25,        // >1 leaves room to pan horizontally and to widen
@@ -31,8 +44,8 @@ class VirtualCamera(private val srcW: Int, private val srcH: Int, fps: Double, v
     private var widen = 0.0
 
     fun size(widen: Double): Pair<Double, Double> {
-        val h = min(min(srcH / cfg.baseZoom * (1 + widen), srcH.toDouble()), srcW / cfg.aspect)
-        return h * cfg.aspect to h
+        val h = min(min(srcH / maxOf(cfg.baseZoom, 1.0) * (1 + widen), srcH.toDouble()), srcW / cfg.aspect)
+        return min(h * cfg.aspect, srcW.toDouble()) to h
     }
 
     private fun damp(cur: Double, target: Double) =
@@ -54,7 +67,7 @@ class VirtualCamera(private val srcW: Int, private val srcH: Int, fps: Double, v
         offY = damp(offY, leadY)
         widen = damp(widen, widenTarget.coerceIn(cfg.minWiden, cfg.maxWiden))
         size(widen).let { w = it.first; h = it.second }
-        return Crop((cx + offX - w / 2).coerceIn(0.0, srcW - w), (cy + offY - h / 2).coerceIn(0.0, srcH - h), w, h)
+        return Crop(clampTo(cx + offX - w / 2, 0.0, srcW - w), clampTo(cy + offY - h / 2, 0.0, srcH - h), w, h)
     }
 
     /** Move the centre only as far as needed to bring the box back inside the safe region. */

@@ -49,9 +49,12 @@ class FrameAnalyzer(private val ctx: Context, private val usePose: Boolean, priv
     }
 
     /** Returns one camera [Step] per sampled frame. [onProgress] gets 0..1. */
-    fun analyse(uri: Uri, info: VideoInfo, fps: Double, check: () -> Unit = {}, onProgress: (Float) -> Unit): List<Step> {
+    fun analyse(
+        uri: Uri, info: VideoInfo, fps: Double, target: Box? = null, targetTimeMs: Long = 0,
+        check: () -> Unit = {}, onProgress: (Float) -> Unit,
+    ): List<Step> {
         val r = MediaMetadataRetriever().apply { setDataSource(ctx, uri) }
-        val planner = Planner(fps, usePose, sports)
+        val planner = Planner(fps, usePose, sports, target, (targetTimeMs / 1000.0 * fps).toInt())
         val scale = minOf(1.0, 640.0 / maxOf(info.width, info.height))
         val aw = (info.width * scale).toInt(); val ah = (info.height * scale).toInt()
         val n = (info.durationMs / 1000.0 * fps).toInt().coerceAtLeast(1)
@@ -65,6 +68,20 @@ class FrameAnalyzer(private val ctx: Context, private val usePose: Boolean, priv
         }
         r.release()
         return steps
+    }
+
+    /** A still frame at [timeMs] plus the people found in it (boxes in source-video pixels), for the "pick a person" screen. */
+    fun peopleAt(uri: Uri, info: VideoInfo, timeMs: Long): Pair<Bitmap?, List<Box>> {
+        val r = MediaMetadataRetriever().apply { setDataSource(ctx, uri) }
+        val scale = minOf(1.0, 960.0 / maxOf(info.width, info.height))
+        val bmp = r.getScaledFrameAtTime(timeMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST, (info.width * scale).toInt(), (info.height * scale).toInt())
+        r.release()
+        if (bmp == null) return null to emptyList()
+        val up = info.width.toDouble() / bmp.width
+        val boxes = detector.detect(BitmapImageBuilder(bmp).build()).detections()
+            .filter { it.categories().first().categoryName() == "person" }
+            .map { d -> d.boundingBox().let { Box(it.left * up, it.top * up, it.right * up, it.bottom * up) } }
+        return bmp to boxes
     }
 
     private fun detect(bmp: Bitmap, up: Double): List<Detection> {

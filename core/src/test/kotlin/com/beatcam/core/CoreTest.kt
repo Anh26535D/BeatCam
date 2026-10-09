@@ -153,4 +153,41 @@ class CoreTest {
         assertTrue(path.at(1.0).h < path.at(0.5).h * 0.95)
         assertEquals(path.at(0.5).cx, path.at(1.0).cx, 1e-6)
     }
+
+    @Test fun neverThrowsEmptyRange() {
+        // portrait/square/odd sources, every shape and zoom: crop must stay valid and inside the frame
+        for ((w, h) in listOf(1080 to 1920, 1000 to 1000, 1921 to 1081, 720 to 1280, 3 to 7)) {
+            for (shape in FrameShape.values()) for (zoom in listOf(0.5, 1.0, 1.25, 2.5)) {
+                val cam = VirtualCamera(w, h, 15.0, CameraConfig(aspect = shape.aspect, baseZoom = zoom))
+                repeat(40) {
+                    val c = cam.update(box(w / 2.0 - 30 + it, h / 2.0, w / 2.0 + 30 + it, h / 2.0 + 90), widenTarget = 5.0)
+                    assertTrue(c.x >= 0 && c.y >= 0 && c.x + c.w <= w + 1e-6 && c.y + c.h <= h + 1e-6, "$w x $h $shape $zoom $c")
+                }
+            }
+        }
+        val steps = List(30) { Step(box(10.0, 10.0, 50.0, 90.0)) }
+        CropPath.build(steps, 1080, 1920, 15.0, CameraConfig(baseZoom = 1.0), null, savgolWindow = 7).at(1.0)
+        assertEquals(1.0, CropPath(emptyList(), 15.0, null).at(1.0).w)
+    }
+
+    @Test fun followsSelectedPerson() {
+        fun person(id: Int, x: Double) = Detection(box(x, 300.0, x + 80, 500.0), 0.9, trackId = id)
+        val left = box(100.0, 300.0, 180.0, 500.0); val right = box(900.0, 300.0, 980.0, 500.0)
+        val planner = Planner(15.0, target = right, targetFrame = 3)
+        val steps = (0 until 20).map { planner.step(listOf(person(1, 100.0 + it), person(2, 900.0 + it))) }
+        assertEquals(right.cx, steps[0].box!!.cx, 1e-6)           // before the selection frame: rests on the pick
+        assertTrue(steps.drop(3).all { it.box!!.cx > 800 })       // afterwards tracks person 2, not the bigger/left one
+        assertTrue(left.cx < 300)
+        // person 2 disappears for a while and comes back: still person 2
+        val p2 = Planner(15.0, target = right, targetFrame = 0)
+        p2.step(listOf(person(1, 100.0), person(2, 900.0)))
+        repeat(40) { p2.step(listOf(person(1, 100.0))) }
+        assertTrue(p2.step(listOf(person(1, 100.0), person(2, 905.0))).box!!.cx > 800)
+    }
+
+    @Test fun frameShapeAspect() {
+        assertEquals(9.0 / 16, FrameShape.PORTRAIT_9_16.aspect, 1e-9)
+        assertEquals(1.0, FrameShape.SQUARE.aspect)
+        assertEquals(16.0 / 9, FrameShape.LANDSCAPE_16_9.aspect, 1e-9)
+    }
 }

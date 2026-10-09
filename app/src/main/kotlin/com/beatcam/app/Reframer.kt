@@ -15,6 +15,7 @@ import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.ProgressHolder
 import androidx.media3.transformer.Transformer
 import com.beatcam.core.CropPath
+import com.beatcam.core.FrameShape
 
 /** Pass 2: Media3 Transformer applies the per-timestamp crop (+punch zoom) on the GPU and re-encodes to 9:16. */
 class Reframer(private val ctx: Context) {
@@ -32,10 +33,11 @@ class Reframer(private val ctx: Context) {
 
     /** Must be called on a thread with a Looper (e.g. main). */
     fun export(
-        uri: Uri, outPath: String, path: CropPath, srcW: Int, srcH: Int, outH: Int = 1920, hevc: Boolean = false,
+        uri: Uri, outPath: String, path: CropPath, srcW: Int, srcH: Int, shape: FrameShape, hevc: Boolean = false,
         onProgress: (Float) -> Unit, onDone: (Result<ExportResult>) -> Unit,
     ): Transformer {
-        val outW = (outH * 9 / 16) / 2 * 2
+        val outW = shape.outW
+        val outH = shape.outH
         val effects: List<Effect> = listOf(CropEffect(path, srcW, srcH), Presentation.createForWidthAndHeight(outW, outH, Presentation.LAYOUT_STRETCH_TO_FIT))
         val item = EditedMediaItem.Builder(MediaItem.fromUri(uri)).setEffects(Effects(emptyList(), effects)).build()
         val transformer = Transformer.Builder(ctx)
