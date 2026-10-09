@@ -19,8 +19,8 @@ optional pose-aware and ball-intent framing.
 ```
 sh app/fetch_models.sh        # downloads efficientdet_lite0.tflite + pose_landmarker_lite.task into assets/
 echo "sdk.dir=$ANDROID_HOME" > local.properties
-gradle :core:test             # works without the Android SDK
-gradle :app:assembleDebug
+./gradlew :core:test             # works without the Android SDK
+./gradlew :app:assembleDebug
 ```
 Requires JDK 17+, Android SDK 35. minSdk 26.
 
