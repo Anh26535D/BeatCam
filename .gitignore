@@ -6,3 +6,4 @@ local.properties
 app/src/main/assets/*.tflite
 app/src/main/assets/*.task
 __pycache__/
+app/src/main/assets/*.onnx
